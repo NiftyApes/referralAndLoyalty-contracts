@@ -1,14 +1,52 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.13;
+pragma solidity ^0.8.19;
 
-contract Counter {
-    uint256 public number;
+import "@openzeppelin/contracts/utils/cryptography/draft-EIP712Upgradeable.sol";
 
-    function setNumber(uint256 newNumber) public {
-        number = newNumber;
+contract referralAndLoyalty {
+    struct Listing {
+        uint256 price;
+        uint256 referralFee;
+        uint256 expiration;
     }
 
-    function increment() public {
-        number++;
+    function getListingHash(
+        Listing memory listing
+    ) public view returns (bytes32) {
+        return
+            _hashTypedDataV4(
+                keccak256(
+                    abi.encode(
+                        _LISTING_TYPEHASH,
+                        listing.price,
+                        listing.referralFee,
+                        listing.expiration
+                    )
+                )
+            );
     }
+
+    function getReferralCodeHash(
+        Listing memory listing
+    ) public view returns (bytes32) {
+        return
+            _hashTypedDataV4(
+                keccak256(
+                    abi.encode(
+                        _REFERRALCODE_TYPEHASH,
+                        listing.price,
+                        listing.referralFee,
+                        listing.expiration
+                    )
+                )
+            );
+    }
+
+    function createListing() public {}
+
+    function createReferralCode() public {}
+
+    function buy() public {}
+
+    function buyWithReferralCode() public {}
 }
