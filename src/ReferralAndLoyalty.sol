@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.19;
+pragma solidity 0.8.18;
 
 import "lib/openzeppelin-contracts/contracts/utils/cryptography/EIP712.sol";
 import "lib/openzeppelin-contracts/contracts/utils/cryptography/ECDSA.sol";
@@ -59,7 +59,7 @@ contract ReferralAndLoyalty is EIP712 {
         address account
     );
 
-    error OfferExpired();
+    error ListingExpired();
 
     error ZeroAddress();
 
@@ -224,6 +224,8 @@ contract ReferralAndLoyalty is EIP712 {
             msg.sender
         );
 
+        _markSignatureUsed(listing, signature);
+
         emit SaleExecuted(
             listing.nftContractAddress,
             listing.nftId,
@@ -245,7 +247,7 @@ contract ReferralAndLoyalty is EIP712 {
 
     function _requireOfferNotExpired(Listing memory listing) internal view {
         if (listing.expiration <= block.timestamp) {
-            revert OfferExpired();
+            revert ListingExpired();
         }
     }
 
