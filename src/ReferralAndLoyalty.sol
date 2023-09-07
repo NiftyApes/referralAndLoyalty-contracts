@@ -9,6 +9,8 @@ import "lib/openzeppelin-contracts/contracts/utils/Address.sol";
 contract ReferralAndLoyalty is EIP712 {
     using Address for address payable;
 
+    /******* STRUCTS ******/
+
     struct Listing {
         address nftContractAddress;
         uint256 nftId;
@@ -21,6 +23,48 @@ contract ReferralAndLoyalty is EIP712 {
         bytes listingSignature;
     }
 
+    /******* EVENTS ******/
+
+    event ListingSignatureUsed(
+        address indexed nftContractAddress,
+        uint256 indexed nftId,
+        Listing Listing,
+        bytes signature
+    );
+
+    event SaleExecuted(
+        address indexed nftContractAddress,
+        uint256 indexed nftId,
+        Listing Listing,
+        bytes signature,
+        address referralRecipient
+    );
+
+    /******* ERRORS ******/
+
+    error SignatureNotAvailable(bytes signature);
+
+    error InvalidSigner(address signer, address expected);
+
+    error InvalidReferralCode(bytes given, bytes expected);
+
+    error InsufficientMsgValue(
+        uint256 msgValueSent,
+        uint256 minMsgValueExpected
+    );
+
+    error NotNftOwner(
+        address nftContractAddress,
+        uint256 nftId,
+        address account
+    );
+
+    error OfferExpired();
+
+    error ZeroAddress();
+
+    /******* STATE VARIABLES ******/
+
     bytes32 private constant _LISTING_TYPEHASH =
         keccak256(
             "Listing(address nftContractAddress,uint256 nftId,uint256 price,uint256 referralFee,uint256 expiration)"
@@ -30,6 +74,8 @@ contract ReferralAndLoyalty is EIP712 {
         keccak256("referralCode(bytes listingSignature)");
 
     mapping(bytes => bool) private _cancelledOrFinalized;
+
+    /******* FUNCTIONS ******/
 
     constructor() EIP712("referralAndLoyalty", "0.0.1") {}
 
@@ -72,10 +118,7 @@ contract ReferralAndLoyalty is EIP712 {
         _requireAvailableSignature(signature);
         address signer = getListingSigner(listing, signature);
         _requireSigner(signer, msg.sender);
-        _markSignatureUsed(
-            // listing,
-            signature
-        );
+        _markSignatureUsed(listing, signature);
     }
 
     function getListingSigner(
@@ -94,45 +137,54 @@ contract ReferralAndLoyalty is EIP712 {
 
     function _requireAvailableSignature(bytes memory signature) private view {
         if (_cancelledOrFinalized[signature]) {
-            // revert SignatureNotAvailable(signature);
+            revert SignatureNotAvailable(signature);
         }
     }
 
     function _requireSigner(address signer, address expected) internal pure {
         if (signer != expected) {
-            // revert InvalidSigner(signer, expected);
+            revert InvalidSigner(signer, expected);
         }
     }
 
     function _markSignatureUsed(
-        // Listing memory listing,
+        Listing memory listing,
         bytes memory signature
     ) internal {
         _cancelledOrFinalized[signature] = true;
 
-        // emit OfferSignatureUsed(
-        //     offer.nftContractAddress,
-        //     offer.nftId,
-        //     offer,
-        //     signature
-        // );
+        emit ListingSignatureUsed(
+            listing.nftContractAddress,
+            listing.nftId,
+            listing,
+            signature
+        );
     }
 
     function buy(
         Listing memory listing,
         bytes calldata signature,
-        ReferralCode memory referralCode,
+        ReferralCode calldata referralCode,
         bytes calldata referralCodeSignature
-    ) public {
+    ) external payable {
         address seller = getListingSigner(listing, signature);
 
         address referralAddress;
 
-        if (referralCodeSignature != bytes(0)) {
+        if (referralCodeSignature.length != 0) {
             address referralSigner = getReferralCodeSigner(
                 referralCode,
                 signature
             );
+
+            if (
+                keccak256(referralCode.listingSignature) != keccak256(signature)
+            ) {
+                revert InvalidReferralCode(
+                    referralCode.listingSignature,
+                    signature
+                );
+            }
 
             if (
                 IERC721(listing.nftContractAddress).balanceOf(referralSigner) >
@@ -142,14 +194,12 @@ contract ReferralAndLoyalty is EIP712 {
             }
         }
 
-        // check if referralCode utilizes the proper signature
-
         _require721Owner(listing.nftContractAddress, listing.nftId, seller);
         _requireOfferNotExpired(listing);
         _requireNonZeroAddress(listing.nftContractAddress);
         // requireSufficientMsgValue
         if (msg.value < listing.price) {
-            // revert InsufficientMsgValue(msg.value, offer.downPaymentAmount);
+            revert InsufficientMsgValue(msg.value, listing.price);
         }
 
         // if msg.value is too high, return excess value
@@ -160,6 +210,7 @@ contract ReferralAndLoyalty is EIP712 {
         // payout seller
         payable(seller).sendValue(listing.price - listing.referralFee);
 
+        // payout referral
         if (referralAddress != address(0)) {
             payable(referralAddress).sendValue(
                 listing.price - listing.referralFee
@@ -173,7 +224,13 @@ contract ReferralAndLoyalty is EIP712 {
             msg.sender
         );
 
-        //emit event
+        emit SaleExecuted(
+            listing.nftContractAddress,
+            listing.nftId,
+            listing,
+            signature,
+            referralAddress
+        );
     }
 
     function _require721Owner(
@@ -182,19 +239,19 @@ contract ReferralAndLoyalty is EIP712 {
         address nftOwner
     ) internal view {
         if (IERC721(nftContractAddress).ownerOf(nftId) != nftOwner) {
-            // revert NotNftOwner(nftContractAddress, nftId, nftOwner);
+            revert NotNftOwner(nftContractAddress, nftId, nftOwner);
         }
     }
 
     function _requireOfferNotExpired(Listing memory listing) internal view {
         if (listing.expiration <= block.timestamp) {
-            // revert OfferExpired();
+            revert OfferExpired();
         }
     }
 
     function _requireNonZeroAddress(address given) internal pure {
         if (given == address(0)) {
-            // revert ZeroAddress();
+            revert ZeroAddress();
         }
     }
 
