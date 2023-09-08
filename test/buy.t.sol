@@ -261,7 +261,7 @@ contract TestBuy is
             nftId: nftId,
             price: price,
             referralFee: referralFee,
-            expiration: block.timestamp
+            expiration: block.timestamp + 1
         });
 
         bytes32 listingHash = referralAndLoyalty.getListingHash(listing);
@@ -294,7 +294,7 @@ contract TestBuy is
             nftId: nftId,
             price: 1,
             referralFee: 0,
-            expiration: block.timestamp
+            expiration: block.timestamp + 1
         });
 
         Listing memory listing2 = Listing({
@@ -302,7 +302,7 @@ contract TestBuy is
             nftId: nftId,
             price: 1,
             referralFee: 0,
-            expiration: block.timestamp + 1
+            expiration: block.timestamp + 2
         });
 
         bytes32 listingHash = referralAndLoyalty.getListingHash(listing);
@@ -351,7 +351,7 @@ contract TestBuy is
             nftId: nftId,
             price: 1,
             referralFee: 0,
-            expiration: block.timestamp
+            expiration: block.timestamp + 1
         });
 
         bytes32 listingHash = referralAndLoyalty.getListingHash(listing);

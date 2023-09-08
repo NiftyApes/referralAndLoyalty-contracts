@@ -6,9 +6,6 @@ import "lib/openzeppelin-contracts/contracts/utils/cryptography/ECDSA.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC721/IERC721.sol";
 import "lib/openzeppelin-contracts/contracts/utils/Address.sol";
 
-import "../test/common/Console.sol";
-import "../test/common/BaseTest.sol";
-
 contract ReferralAndLoyalty is EIP712 {
     using Address for address payable;
 
@@ -114,16 +111,6 @@ contract ReferralAndLoyalty is EIP712 {
             );
     }
 
-    function withdrawListingSignature(
-        Listing memory listing,
-        bytes memory signature
-    ) external {
-        _requireAvailableSignature(signature);
-        address signer = getListingSigner(listing, signature);
-        _requireSigner(signer, msg.sender);
-        _markSignatureUsed(listing, signature);
-    }
-
     function getListingSigner(
         Listing memory listing,
         bytes memory listingSignature
@@ -142,32 +129,6 @@ contract ReferralAndLoyalty is EIP712 {
             );
     }
 
-    function _requireAvailableSignature(bytes memory signature) private view {
-        if (_cancelledOrFinalized[signature]) {
-            revert SignatureNotAvailable(signature);
-        }
-    }
-
-    function _requireSigner(address signer, address expected) internal pure {
-        if (signer != expected) {
-            revert InvalidSigner(signer, expected);
-        }
-    }
-
-    function _markSignatureUsed(
-        Listing memory listing,
-        bytes memory signature
-    ) internal {
-        _cancelledOrFinalized[signature] = true;
-
-        emit ListingSignatureUsed(
-            listing.nftContractAddress,
-            listing.nftId,
-            listing,
-            signature
-        );
-    }
-
     function buy(
         Listing memory listing,
         bytes calldata listingSignature,
@@ -176,41 +137,32 @@ contract ReferralAndLoyalty is EIP712 {
     ) external payable {
         address seller = getListingSigner(listing, listingSignature);
 
+        _requireAvailableSignature(listingSignature);
+        _require721Owner(listing.nftContractAddress, listing.nftId, seller);
+        _requireOfferNotExpired(listing);
+        _requireSufficientMsgValue(msg.value, listing.price);
+
         address referralAddress;
         uint256 referralFee;
 
+        // if referralCodeSignature is provided
         if (referralCodeSignature.length != 0) {
             address referralSigner = getReferralCodeSigner(
                 referralCode,
                 referralCodeSignature
             );
 
-            if (
-                keccak256(referralCode.listingSignature) !=
-                keccak256(listingSignature)
-            ) {
-                revert InvalidReferralCode(
-                    referralCode.listingSignature,
-                    listingSignature
-                );
-            }
+            _requireCorrectListing(
+                referralCode.listingSignature,
+                listingSignature
+            );
+            _requireReferrerIsCollector(
+                listing.nftContractAddress,
+                referralSigner
+            );
 
-            if (
-                IERC721(listing.nftContractAddress).balanceOf(referralSigner) ==
-                0
-            ) {
-                revert ReferrerNotCollector();
-            }
             referralAddress = referralSigner;
             referralFee = listing.referralFee;
-        }
-
-        _requireAvailableSignature(listingSignature);
-        _require721Owner(listing.nftContractAddress, listing.nftId, seller);
-        _requireOfferNotExpired(listing);
-        // requireSufficientMsgValue
-        if (msg.value < listing.price) {
-            revert InsufficientMsgValue(msg.value, listing.price);
         }
 
         // if msg.value is too high, return excess value
@@ -244,6 +196,45 @@ contract ReferralAndLoyalty is EIP712 {
         );
     }
 
+    function withdrawListingSignature(
+        Listing memory listing,
+        bytes memory signature
+    ) external {
+        _requireAvailableSignature(signature);
+        address signer = getListingSigner(listing, signature);
+        _requireSigner(signer, msg.sender);
+        _markSignatureUsed(listing, signature);
+    }
+
+    function _transferNft(
+        address nftContractAddress,
+        uint256 nftId,
+        address from,
+        address to
+    ) internal {
+        IERC721(nftContractAddress).safeTransferFrom(from, to, nftId);
+    }
+
+    function _markSignatureUsed(
+        Listing memory listing,
+        bytes memory signature
+    ) internal {
+        _cancelledOrFinalized[signature] = true;
+
+        emit ListingSignatureUsed(
+            listing.nftContractAddress,
+            listing.nftId,
+            listing,
+            signature
+        );
+    }
+
+    function _requireAvailableSignature(bytes memory signature) private view {
+        if (_cancelledOrFinalized[signature]) {
+            revert SignatureNotAvailable(signature);
+        }
+    }
+
     function _require721Owner(
         address nftContractAddress,
         uint256 nftId,
@@ -260,12 +251,36 @@ contract ReferralAndLoyalty is EIP712 {
         }
     }
 
-    function _transferNft(
+    function _requireSufficientMsgValue(
+        uint256 msgValue,
+        uint256 price
+    ) private pure {
+        if (msgValue < price) {
+            revert InsufficientMsgValue(msgValue, price);
+        }
+    }
+
+    function _requireCorrectListing(
+        bytes memory given,
+        bytes memory expected
+    ) private pure {
+        if (keccak256(given) != keccak256(expected)) {
+            revert InvalidReferralCode(given, expected);
+        }
+    }
+
+    function _requireReferrerIsCollector(
         address nftContractAddress,
-        uint256 nftId,
-        address from,
-        address to
-    ) internal {
-        IERC721(nftContractAddress).safeTransferFrom(from, to, nftId);
+        address referrer
+    ) private view {
+        if (IERC721(nftContractAddress).balanceOf(referrer) == 0) {
+            revert ReferrerNotCollector();
+        }
+    }
+
+    function _requireSigner(address signer, address expected) internal pure {
+        if (signer != expected) {
+            revert InvalidSigner(signer, expected);
+        }
     }
 }
