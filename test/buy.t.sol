@@ -19,9 +19,76 @@ contract TestBuy is
 {
     address nftContractAddress = address(boredApeYachtClub);
     uint256 nftId = 8661;
+    uint256 SIGNER_PRIVATE_KEY_1 =
+        0x60b919c82f0b4791a5b7c6a7275970ace1748759ebdaa4076d7eeed9dbcff3c3;
+    address SIGNER_1 = 0x503408564C50b43208529faEf9bdf9794c015d52;
 
     function setUp() public override {
         super.setUp();
+    }
+
+    function test_buy_with_referralCode(
+        uint256 price,
+        uint256 referralFee
+    ) public {
+        vm.assume(price < defaultInitialEthBalance);
+        vm.assume(price > referralFee);
+
+        Listing memory listing = Listing({
+            nftContractAddress: nftContractAddress,
+            nftId: nftId,
+            price: price,
+            referralFee: referralFee,
+            expiration: block.timestamp + 1
+        });
+
+        bytes32 listingHash = referralAndLoyalty.getListingHash(listing);
+
+        bytes memory listingSignature = sign(seller1_private_key, listingHash);
+
+        ReferralCode memory referralCode = ReferralCode(listingSignature);
+
+        bytes32 referralCodeHash = referralAndLoyalty.getReferralCodeHash(
+            referralCode
+        );
+
+        bytes memory referralCodeSignature = sign(
+            buyer1_private_key,
+            referralCodeHash
+        );
+
+        vm.startPrank(seller1);
+        boredApeYachtClub.approve(address(referralAndLoyalty), nftId);
+        vm.stopPrank();
+
+        uint256 sellerBalanceBefore = address(seller1).balance;
+        uint256 buyer1BalanceBefore = address(buyer1).balance;
+
+        vm.startPrank(buyer2);
+        referralAndLoyalty.buy{value: listing.price}(
+            listing,
+            listingSignature,
+            referralCode,
+            referralCodeSignature
+        );
+        vm.stopPrank();
+
+        // buyer is the owner of the nft after the sale
+        assertEq(boredApeYachtClub.ownerOf(nftId), buyer2);
+
+        uint256 sellerBalanceAfter = address(seller1).balance;
+        uint256 buyer1BalanceAfter = address(buyer1).balance;
+
+        // seller paid out correctly
+        assertEq(
+            sellerBalanceAfter,
+            (sellerBalanceBefore + listing.price - listing.referralFee)
+        );
+        // referrer paid out correctly
+        assertEq(
+            buyer1BalanceAfter,
+            (buyer1BalanceBefore + listing.referralFee)
+        );
     }
 
     function test_buy_without_referralCode(
@@ -31,8 +98,95 @@ contract TestBuy is
         vm.assume(price < defaultInitialEthBalance);
         vm.assume(price > referralFee);
 
-        console.log("price", price);
-        console.log("referralFee", referralFee);
+        Listing memory listing = Listing({
+            nftContractAddress: nftContractAddress,
+            nftId: nftId,
+            price: price,
+            referralFee: referralFee,
+            expiration: block.timestamp + 1
+        });
+
+        bytes32 listingHash = referralAndLoyalty.getListingHash(listing);
+
+        bytes memory listingSignature = sign(seller1_private_key, listingHash);
+
+        ReferralCode memory referralCode = ReferralCode("");
+
+        vm.startPrank(seller1);
+        boredApeYachtClub.approve(address(referralAndLoyalty), nftId);
+        vm.stopPrank();
+
+        uint256 sellerBalanceBefore = address(seller1).balance;
+
+        vm.startPrank(buyer1);
+        referralAndLoyalty.buy{value: listing.price}(
+            listing,
+            listingSignature,
+            referralCode,
+            ""
+        );
+        vm.stopPrank();
+
+        // buyer is the owner of the nft after the sale
+        assertEq(boredApeYachtClub.ownerOf(nftId), buyer1);
+
+        uint256 sellerBalanceAfter = address(seller1).balance;
+
+        // seller paid out correctly
+        assertEq(sellerBalanceAfter, (sellerBalanceBefore + listing.price));
+    }
+
+    function test_buy_with_referralCode_FAIL_referrer_not_collector(
+        uint256 price,
+        uint256 referralFee
+    ) public {
+        vm.assume(price < defaultInitialEthBalance);
+        vm.assume(price > referralFee);
+
+        Listing memory listing = Listing({
+            nftContractAddress: nftContractAddress,
+            nftId: nftId,
+            price: price,
+            referralFee: referralFee,
+            expiration: block.timestamp + 1
+        });
+
+        bytes32 listingHash = referralAndLoyalty.getListingHash(listing);
+
+        bytes memory listingSignature = sign(seller1_private_key, listingHash);
+
+        ReferralCode memory referralCode = ReferralCode(listingSignature);
+
+        bytes32 referralCodeHash = referralAndLoyalty.getReferralCodeHash(
+            referralCode
+        );
+
+        bytes memory referralCodeSignature = sign(
+            SIGNER_PRIVATE_KEY_1,
+            referralCodeHash
+        );
+
+        vm.startPrank(seller1);
+        boredApeYachtClub.approve(address(referralAndLoyalty), nftId);
+        vm.stopPrank();
+
+        vm.expectRevert(abi.encodeWithSelector(ReferrerNotCollector.selector));
+
+        vm.startPrank(buyer2);
+        referralAndLoyalty.buy{value: listing.price}(
+            listing,
+            listingSignature,
+            referralCode,
+            referralCodeSignature
+        );
+        vm.stopPrank();
+    }
+
+    function test_buy_FAIL_insufficient_msgvalue(
+        uint256 price,
+        uint256 referralFee
+    ) public {
+        vm.assume(price > referralFee);
 
         Listing memory listing = Listing({
             nftContractAddress: nftContractAddress,
@@ -52,239 +206,187 @@ contract TestBuy is
         boredApeYachtClub.approve(address(referralAndLoyalty), nftId);
         vm.stopPrank();
 
-        uint256 sellerBalanceBefore = address(seller1).balance;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                InsufficientMsgValue.selector,
+                0,
+                listing.price
+            )
+        );
 
         vm.startPrank(buyer1);
-        referralAndLoyalty.buy{value: listing.price}(
-            listing,
-            signature,
-            referralCode,
-            ""
-        );
+        referralAndLoyalty.buy(listing, signature, referralCode, "");
         vm.stopPrank();
-
-        // buyer is the owner of the nft after the sale
-        assertEq(boredApeYachtClub.ownerOf(nftId), buyer1);
-
-        uint256 sellerBalanceAfter = address(seller1).balance;
-
-        // seller paid out correctly
-        assertEq(sellerBalanceAfter, (sellerBalanceBefore + listing.price));
     }
 
-    // function test_buy_FAIL_insufficient_msgvalue(
-    //     uint256 price,
-    //     uint256 referralFee
-    // ) public {
-    //     vm.assume(price > referralFee);
+    function test_buy_FAIL_expired_listing(
+        uint256 price,
+        uint256 referralFee
+    ) public {
+        vm.assume(price > referralFee);
 
-    //     Listing memory listing = Listing({
-    //         nftContractAddress: nftContractAddress,
-    //         nftId: nftId,
-    //         price: price,
-    //         referralFee: referralFee,
-    //         expiration: block.timestamp + 1
-    //     });
+        Listing memory listing = Listing({
+            nftContractAddress: nftContractAddress,
+            nftId: nftId,
+            price: price,
+            referralFee: referralFee,
+            expiration: block.timestamp
+        });
 
-    //     bytes32 listingHash = referralAndLoyalty.getListingHash(listing);
+        bytes32 listingHash = referralAndLoyalty.getListingHash(listing);
 
-    //     bytes memory signature = sign(seller1_private_key, listingHash);
+        bytes memory signature = sign(seller1_private_key, listingHash);
 
-    //     ReferralCode memory referralCode = ReferralCode("");
+        ReferralCode memory referralCode = ReferralCode("");
 
-    //     vm.startPrank(seller1);
-    //     boredApeYachtClub.approve(address(referralAndLoyalty), nftId);
-    //     vm.stopPrank();
+        vm.startPrank(seller1);
+        boredApeYachtClub.approve(address(referralAndLoyalty), nftId);
+        vm.stopPrank();
 
-    //     uint256 sellerBalanceBefore = address(seller1).balance;
+        vm.expectRevert(abi.encodeWithSelector(ListingExpired.selector));
 
-    //     vm.startPrank(buyer1);
-    //     referralAndLoyalty.buy(listing, signature, referralCode, "");
-    //     vm.stopPrank();
+        vm.startPrank(buyer1);
+        referralAndLoyalty.buy(listing, signature, referralCode, "");
+        vm.stopPrank();
+    }
 
-    //     // buyer is the owner of the nft after the sale
-    //     assertEq(boredApeYachtClub.ownerOf(nftId), buyer1);
+    function test_buy_FAIL_seller_notNFTOwner(
+        uint256 price,
+        uint256 referralFee
+    ) public {
+        vm.assume(price > referralFee);
 
-    //     uint256 sellerBalanceAfter = address(seller1).balance;
+        Listing memory listing = Listing({
+            nftContractAddress: nftContractAddress,
+            nftId: nftId,
+            price: price,
+            referralFee: referralFee,
+            expiration: block.timestamp
+        });
 
-    //     // seller paid out correctly
-    //     assertEq(sellerBalanceAfter, (sellerBalanceBefore + listing.price));
-    // }
+        bytes32 listingHash = referralAndLoyalty.getListingHash(listing);
 
-    // function test_buy_FAIL_expired_listing(
-    //     uint256 price,
-    //     uint256 referralFee
-    // ) public {
-    //     vm.assume(price > referralFee);
+        bytes memory signature = sign(SIGNER_PRIVATE_KEY_1, listingHash);
 
-    //     Listing memory listing = Listing({
-    //         nftContractAddress: nftContractAddress,
-    //         nftId: nftId,
-    //         price: price,
-    //         referralFee: referralFee,
-    //         expiration: block.timestamp
-    //     });
+        ReferralCode memory referralCode = ReferralCode("");
 
-    //     bytes32 listingHash = referralAndLoyalty.getListingHash(listing);
+        vm.startPrank(seller1);
+        boredApeYachtClub.approve(address(referralAndLoyalty), nftId);
+        vm.stopPrank();
 
-    //     bytes memory signature = sign(seller1_private_key, listingHash);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                NotNftOwner.selector,
+                listing.nftContractAddress,
+                listing.nftId,
+                SIGNER_1
+            )
+        );
 
-    //     ReferralCode memory referralCode = ReferralCode("");
+        vm.startPrank(buyer1);
+        referralAndLoyalty.buy(listing, signature, referralCode, "");
+        vm.stopPrank();
+    }
 
-    //     vm.startPrank(seller1);
-    //     boredApeYachtClub.approve(address(referralAndLoyalty), nftId);
-    //     vm.stopPrank();
+    function test_buy_FAIL_invalidReferralCode() public {
+        Listing memory listing = Listing({
+            nftContractAddress: nftContractAddress,
+            nftId: nftId,
+            price: 1,
+            referralFee: 0,
+            expiration: block.timestamp
+        });
 
-    //     uint256 sellerBalanceBefore = address(seller1).balance;
+        Listing memory listing2 = Listing({
+            nftContractAddress: nftContractAddress,
+            nftId: nftId,
+            price: 1,
+            referralFee: 0,
+            expiration: block.timestamp + 1
+        });
 
-    //     vm.startPrank(buyer1);
-    //     referralAndLoyalty.buy(listing, signature, referralCode, "");
-    //     vm.stopPrank();
+        bytes32 listingHash = referralAndLoyalty.getListingHash(listing);
 
-    //     // buyer is the owner of the nft after the sale
-    //     assertEq(boredApeYachtClub.ownerOf(nftId), buyer1);
+        bytes memory listingSignature = sign(seller1_private_key, listingHash);
 
-    //     uint256 sellerBalanceAfter = address(seller1).balance;
+        bytes32 listingHash2 = referralAndLoyalty.getListingHash(listing2);
 
-    //     // seller paid out correctly
-    //     assertEq(sellerBalanceAfter, (sellerBalanceBefore + listing.price));
-    // }
+        bytes memory listingSignature2 = sign(
+            seller1_private_key,
+            listingHash2
+        );
 
-    // function _test_buyNow_reverts_if_insufficient_msgValue(
-    //     FuzzedOfferFields memory fuzzed
-    // ) private {
-    //     Offer memory offer = saleOfferStructFromFields(
-    //         fuzzed,
-    //         defaultFixedOfferFields,
-    //         address(0)
-    //     );
+        ReferralCode memory referralCode = ReferralCode(listingSignature2);
 
-    //     bytes memory offerSignature = seller1CreateOffer(offer);
+        bytes32 referralCodeHash = referralAndLoyalty.getReferralCodeHash(
+            referralCode
+        );
 
-    //     vm.startPrank(buyer1);
-    //     vm.expectRevert(
-    //         abi.encodeWithSelector(
-    //             INiftyApesErrors.InsufficientMsgValue.selector,
-    //             offer.loanTerms.downPaymentAmount - 1,
-    //             offer.loanTerms.downPaymentAmount
-    //         )
-    //     );
-    //     sellerFinancing.buyNow{value: offer.loanTerms.downPaymentAmount - 1}(
-    //         offer,
-    //         offerSignature,
-    //         buyer1,
-    //         offer.collateralItem.tokenId,
-    //         offer.collateralItem.amount
-    //     );
-    //     vm.stopPrank();
-    // }
+        bytes memory referralCodeSignature = sign(
+            buyer1_private_key,
+            referralCodeHash
+        );
 
-    // function test_fuzz_buyNow_reverts_if_insufficient_msgValue(
-    //     FuzzedOfferFields memory fuzzed
-    // ) public validateFuzzedOfferFields(fuzzed) {
-    //     _test_buyNow_reverts_if_insufficient_msgValue(fuzzed);
-    // }
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                InvalidReferralCode.selector,
+                listingSignature2,
+                listingSignature
+            )
+        );
 
-    // function test_unit_buyNow_reverts_if_insufficient_msgValue() public {
-    //     FuzzedOfferFields
-    //         memory fixedForSpeed = defaultFixedFuzzedFieldsForFastUnitTesting;
-    //     _test_buyNow_reverts_if_insufficient_msgValue(fixedForSpeed);
-    // }
+        vm.startPrank(buyer2);
+        referralAndLoyalty.buy{value: listing.price}(
+            listing,
+            listingSignature,
+            referralCode,
+            referralCodeSignature
+        );
+        vm.stopPrank();
+    }
 
-    // function _test_buy_withMarketplaceFees(
-    //     FuzzedOfferFields memory fuzzed
-    // ) private {
-    //     Offer memory offer = saleOfferStructFromFields(
-    //         fuzzed,
-    //         defaultFixedOfferFields,
-    //         address(0)
-    //     );
-    //     uint256 marketplaceFee = ((offer.loanTerms.principalAmount +
-    //         offer.loanTerms.downPaymentAmount) * SUPERRARE_MARKET_FEE_BPS) /
-    //         10_000;
+    function test_buy_FAIL_signatureNotAvailable() public {
+        Listing memory listing = Listing({
+            nftContractAddress: nftContractAddress,
+            nftId: nftId,
+            price: 1,
+            referralFee: 0,
+            expiration: block.timestamp
+        });
 
-    //     offer.marketplaceRecipients = new MarketplaceRecipient[](1);
-    //     offer.marketplaceRecipients[0] = MarketplaceRecipient(
-    //         address(SUPERRARE_MARKETPLACE),
-    //         marketplaceFee
-    //     );
+        bytes32 listingHash = referralAndLoyalty.getListingHash(listing);
 
-    //     (
-    //         address payable[] memory recipients1,
-    //         uint256[] memory amounts1
-    //     ) = IRoyaltyEngineV1(0x0385603ab55642cb4Dd5De3aE9e306809991804f)
-    //             .getRoyalty(
-    //                 offer.collateralItem.token,
-    //                 offer.collateralItem.tokenId,
-    //                 offer.loanTerms.downPaymentAmount
-    //             );
+        bytes memory listingSignature = sign(seller1_private_key, listingHash);
 
-    //     uint256 totalRoyaltiesPaid;
+        ReferralCode memory referralCode = ReferralCode(listingSignature);
 
-    //     // payout royalties
-    //     for (uint256 i = 0; i < recipients1.length; i++) {
-    //         totalRoyaltiesPaid += amounts1[i];
-    //     }
+        bytes32 referralCodeHash = referralAndLoyalty.getReferralCodeHash(
+            referralCode
+        );
 
-    //     uint256 sellerBalanceBefore = address(seller1).balance;
-    //     uint256 royaltiesBalanceBefore = address(recipients1[0]).balance;
+        bytes memory referralCodeSignature = sign(
+            buyer1_private_key,
+            referralCodeHash
+        );
 
-    //     uint256 marketplaceBalanceBefore = address(SUPERRARE_MARKETPLACE)
-    //         .balance;
+        vm.startPrank(seller1);
+        referralAndLoyalty.withdrawListingSignature(listing, listingSignature);
+        vm.stopPrank();
 
-    //     bytes memory offerSignature = seller1CreateOffer(offer);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SignatureNotAvailable.selector,
+                listingSignature
+            )
+        );
 
-    //     vm.startPrank(buyer1);
-    //     sellerFinancing.buyNow{
-    //         value: offer.loanTerms.downPaymentAmount + marketplaceFee
-    //     }(
-    //         offer,
-    //         offerSignature,
-    //         buyer1,
-    //         offer.collateralItem.tokenId,
-    //         offer.collateralItem.amount
-    //     );
-
-    //     // buyer is the owner of the nft after the sale
-    //     assertEq(
-    //         boredApeYachtClub.ownerOf(offer.collateralItem.tokenId),
-    //         buyer1
-    //     );
-
-    //     uint256 sellerBalanceAfter = address(seller1).balance;
-    //     uint256 royaltiesBalanceAfter = address(recipients1[0]).balance;
-    //     uint256 marketplaceBalanceAfter = address(SUPERRARE_MARKETPLACE)
-    //         .balance;
-
-    //     assertEq(
-    //         marketplaceBalanceAfter,
-    //         (marketplaceBalanceBefore + marketplaceFee)
-    //     );
-
-    //     // seller paid out correctly
-    //     assertEq(
-    //         sellerBalanceAfter,
-    //         (sellerBalanceBefore +
-    //             offer.loanTerms.downPaymentAmount -
-    //             totalRoyaltiesPaid)
-    //     );
-
-    //     // royatlies paid out correctly
-    //     assertEq(
-    //         royaltiesBalanceAfter,
-    //         (royaltiesBalanceBefore + totalRoyaltiesPaid)
-    //     );
-    // }
-
-    // function test_fuzz_buy_withMarketplaceFees(
-    //     FuzzedOfferFields memory fuzzed
-    // ) public validateFuzzedOfferFields(fuzzed) {
-    //     _test_buy_withMarketplaceFees(fuzzed);
-    // }
-
-    // function test_unit_buy_withMarketplaceFees() public {
-    //     FuzzedOfferFields
-    //         memory fixedForSpeed = defaultFixedFuzzedFieldsForFastUnitTesting;
-    //     _test_buy_withMarketplaceFees(fixedForSpeed);
-    // }
+        vm.startPrank(buyer2);
+        referralAndLoyalty.buy{value: listing.price}(
+            listing,
+            listingSignature,
+            referralCode,
+            referralCodeSignature
+        );
+        vm.stopPrank();
+    }
 }

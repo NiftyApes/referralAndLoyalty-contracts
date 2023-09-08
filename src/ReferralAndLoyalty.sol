@@ -6,6 +6,9 @@ import "lib/openzeppelin-contracts/contracts/utils/cryptography/ECDSA.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC721/IERC721.sol";
 import "lib/openzeppelin-contracts/contracts/utils/Address.sol";
 
+import "../test/common/Console.sol";
+import "../test/common/BaseTest.sol";
+
 contract ReferralAndLoyalty is EIP712 {
     using Address for address payable;
 
@@ -36,7 +39,7 @@ contract ReferralAndLoyalty is EIP712 {
         address indexed nftContractAddress,
         uint256 indexed nftId,
         Listing Listing,
-        bytes signature,
+        bytes listingSignature,
         address referralRecipient
     );
 
@@ -47,6 +50,8 @@ contract ReferralAndLoyalty is EIP712 {
     error InvalidSigner(address signer, address expected);
 
     error InvalidReferralCode(bytes given, bytes expected);
+
+    error ReferrerNotCollector();
 
     error InsufficientMsgValue(
         uint256 msgValueSent,
@@ -60,8 +65,6 @@ contract ReferralAndLoyalty is EIP712 {
     );
 
     error ListingExpired();
-
-    error ZeroAddress();
 
     /******* STATE VARIABLES ******/
 
@@ -123,16 +126,20 @@ contract ReferralAndLoyalty is EIP712 {
 
     function getListingSigner(
         Listing memory listing,
-        bytes memory signature
+        bytes memory listingSignature
     ) public view returns (address) {
-        return ECDSA.recover(getListingHash(listing), signature);
+        return ECDSA.recover(getListingHash(listing), listingSignature);
     }
 
     function getReferralCodeSigner(
         ReferralCode memory referralCode,
-        bytes memory signature
+        bytes memory referralCodeSignature
     ) public view returns (address) {
-        return ECDSA.recover(getReferralCodeHash(referralCode), signature);
+        return
+            ECDSA.recover(
+                getReferralCodeHash(referralCode),
+                referralCodeSignature
+            );
     }
 
     function _requireAvailableSignature(bytes memory signature) private view {
@@ -163,40 +170,44 @@ contract ReferralAndLoyalty is EIP712 {
 
     function buy(
         Listing memory listing,
-        bytes calldata signature,
+        bytes calldata listingSignature,
         ReferralCode calldata referralCode,
         bytes calldata referralCodeSignature
     ) external payable {
-        address seller = getListingSigner(listing, signature);
+        address seller = getListingSigner(listing, listingSignature);
 
         address referralAddress;
+        uint256 referralFee;
 
         if (referralCodeSignature.length != 0) {
             address referralSigner = getReferralCodeSigner(
                 referralCode,
-                signature
+                referralCodeSignature
             );
 
             if (
-                keccak256(referralCode.listingSignature) != keccak256(signature)
+                keccak256(referralCode.listingSignature) !=
+                keccak256(listingSignature)
             ) {
                 revert InvalidReferralCode(
                     referralCode.listingSignature,
-                    signature
+                    listingSignature
                 );
             }
 
             if (
-                IERC721(listing.nftContractAddress).balanceOf(referralSigner) >
+                IERC721(listing.nftContractAddress).balanceOf(referralSigner) ==
                 0
             ) {
-                referralAddress = referralSigner;
+                revert ReferrerNotCollector();
             }
+            referralAddress = referralSigner;
+            referralFee = listing.referralFee;
         }
 
+        _requireAvailableSignature(listingSignature);
         _require721Owner(listing.nftContractAddress, listing.nftId, seller);
         _requireOfferNotExpired(listing);
-        _requireNonZeroAddress(listing.nftContractAddress);
         // requireSufficientMsgValue
         if (msg.value < listing.price) {
             revert InsufficientMsgValue(msg.value, listing.price);
@@ -208,13 +219,11 @@ contract ReferralAndLoyalty is EIP712 {
         }
 
         // payout seller
-        payable(seller).sendValue(listing.price - listing.referralFee);
+        payable(seller).sendValue(listing.price - referralFee);
 
         // payout referral
         if (referralAddress != address(0)) {
-            payable(referralAddress).sendValue(
-                listing.price - listing.referralFee
-            );
+            payable(referralAddress).sendValue(referralFee);
         }
 
         _transferNft(
@@ -224,13 +233,13 @@ contract ReferralAndLoyalty is EIP712 {
             msg.sender
         );
 
-        _markSignatureUsed(listing, signature);
+        _markSignatureUsed(listing, listingSignature);
 
         emit SaleExecuted(
             listing.nftContractAddress,
             listing.nftId,
             listing,
-            signature,
+            listingSignature,
             referralAddress
         );
     }
@@ -248,12 +257,6 @@ contract ReferralAndLoyalty is EIP712 {
     function _requireOfferNotExpired(Listing memory listing) internal view {
         if (listing.expiration <= block.timestamp) {
             revert ListingExpired();
-        }
-    }
-
-    function _requireNonZeroAddress(address given) internal pure {
-        if (given == address(0)) {
-            revert ZeroAddress();
         }
     }
 
